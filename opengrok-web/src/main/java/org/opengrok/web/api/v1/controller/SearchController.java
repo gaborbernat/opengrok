@@ -39,6 +39,7 @@ import org.opengrok.indexer.configuration.Project;
 import org.opengrok.indexer.search.Hit;
 import org.opengrok.indexer.search.SearchEngine;
 import org.opengrok.indexer.web.QueryParameters;
+import org.opengrok.indexer.web.SortOrder;
 import org.opengrok.web.PageConfig;
 import org.opengrok.web.api.v1.filter.CorsEnable;
 import org.opengrok.web.api.v1.suggester.provider.service.SuggesterService;
@@ -81,9 +82,10 @@ public class SearchController {
             @QueryParam("projects") final List<String> projects,
             @QueryParam("maxresults") // Akin to QueryParameters.COUNT_PARAM
             @DefaultValue(MAX_RESULTS + "") final int maxResults,
+            @QueryParam(QueryParameters.SORT_PARAM) @DefaultValue("relevancy") final String sort,
             @QueryParam(QueryParameters.START_PARAM) @DefaultValue(0 + "") final int startDocIndex
     ) {
-        try (SearchEngineWrapper engine = new SearchEngineWrapper(full, def, symbol, path, hist, type)) {
+        try (SearchEngineWrapper engine = new SearchEngineWrapper(full, def, symbol, path, hist, type, SortOrder.get(sort))) {
 
             if (!engine.isValid()) {
                 throw new WebApplicationException("Invalid request", Response.Status.BAD_REQUEST);
@@ -119,7 +121,8 @@ public class SearchController {
                 final String symbol,
                 final String path,
                 final String hist,
-                final String type
+                final String type,
+                final SortOrder sortOrder
         ) {
             engine.setFreetext(full);
             engine.setDefinition(def);
@@ -127,6 +130,7 @@ public class SearchController {
             engine.setFile(path);
             engine.setHistory(hist);
             engine.setType(type);
+            engine.setSortOrder(sortOrder);
         }
 
         public List<Hit> search(

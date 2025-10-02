@@ -48,6 +48,9 @@ import org.apache.lucene.queryparser.classic.ParseException;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
+import org.apache.lucene.search.Sort;
+import org.apache.lucene.search.SortField;
+import org.apache.lucene.search.TopFieldCollector;
 import org.apache.lucene.search.TopScoreDocCollector;
 import org.apache.lucene.util.Version;
 import org.opengrok.indexer.analysis.AbstractAnalyzer;
@@ -66,6 +69,7 @@ import org.opengrok.indexer.search.context.HistoryContext;
 import org.opengrok.indexer.util.Statistics;
 import org.opengrok.indexer.util.TandemPath;
 import org.opengrok.indexer.web.Prefix;
+import org.opengrok.indexer.web.SortOrder;
 
 /**
  * This is an encapsulation of the details on how to search in the index database.
@@ -114,6 +118,10 @@ public class SearchEngine {
      * Holds value of property type.
      */
     private String type;
+    /**
+     * Holds value of property sort.
+     */
+    private SortOrder sortOrder;
     /**
      * Holds value of property indexDatabase.
      */
@@ -181,6 +189,10 @@ public class SearchEngine {
         SuperIndexSearcher superIndexSearcher = RuntimeEnvironment.getInstance().getSuperIndexSearcher("");
         searcherList.add(superIndexSearcher);
         searcher = superIndexSearcher;
+        // If a field-based sort is requested, collect all hits (disable paging optimization)
+        if (sortOrder != SortOrder.RELEVANCY) {
+            paging = false;
+        }
         searchIndex(superIndexSearcher, paging);
     }
 
@@ -205,18 +217,42 @@ public class SearchEngine {
     }
 
     private void searchIndex(IndexSearcher searcher, boolean paging) throws IOException {
-        collector = TopScoreDocCollector.create(hitsPerPage * cachePages, Short.MAX_VALUE);
-        Statistics stat = new Statistics();
-        searcher.search(query, collector);
-        totalHits = collector.getTotalHits();
-        stat.report(LOGGER, Level.FINEST, "search via SearchEngine done",
-                "search.latency", new String[]{"category", "engine",
-                        "outcome", totalHits > 0 ? "success" : "empty"});
-        if (!paging && totalHits > 0) {
-            collector = TopScoreDocCollector.create(totalHits, Short.MAX_VALUE);
-            searcher.search(query, collector);
+        // Determine if we need a field-based sort or relevancy (score) sort.
+        Sort luceneSort = null;
+        if (getSortOrder() == SortOrder.LASTMODIFIED) {
+            // Descending by date (newest first) - QueryBuilder.DATE is string sortable in index.
+            luceneSort = new Sort(new SortField(QueryBuilder.DATE, SortField.Type.STRING, true));
+        } else if (getSortOrder() == SortOrder.BY_PATH) {
+            luceneSort = new Sort(new SortField(QueryBuilder.FULLPATH, SortField.Type.STRING));
         }
-        hits = collector.topDocs().scoreDocs;
+
+        Statistics stat = new Statistics();
+        if (luceneSort == null) {
+            collector = TopScoreDocCollector.create(hitsPerPage * cachePages, Short.MAX_VALUE);
+            searcher.search(query, collector);
+            totalHits = collector.getTotalHits();
+            stat.report(LOGGER, Level.FINEST, "search via SearchEngine done",
+                    "search.latency", new String[]{"category", "engine",
+                            "outcome", totalHits > 0 ? "success" : "empty"});
+            if (!paging && totalHits > 0) {
+                collector = TopScoreDocCollector.create(totalHits, Short.MAX_VALUE);
+                searcher.search(query, collector);
+            }
+            hits = collector.topDocs().scoreDocs;
+        } else {
+            // Field based sort; use TopFieldCollector
+            TopFieldCollector fieldCollector = TopFieldCollector.create(luceneSort, hitsPerPage * cachePages, Short.MAX_VALUE);
+            searcher.search(query, fieldCollector);
+            totalHits = fieldCollector.getTotalHits();
+            stat.report(LOGGER, Level.FINEST, "search via SearchEngine done (sorted)",
+                    "search.latency", new String[]{"category", "engine",
+                            "outcome", totalHits > 0 ? "success" : "empty"});
+            if (!paging && totalHits > 0) {
+                fieldCollector = TopFieldCollector.create(luceneSort, totalHits, Short.MAX_VALUE);
+                searcher.search(query, fieldCollector);
+            }
+            hits = fieldCollector.topDocs().scoreDocs;
+        }
         StoredFields storedFields = searcher.storedFields();
         for (ScoreDoc hit : hits) {
             int docId = hit.doc;
@@ -644,5 +680,23 @@ public class SearchEngine {
      */
     public void setType(String fileType) {
         this.type = fileType;
+    }
+
+    /**
+     * Getter for property sort.
+     *
+     * @return Value of property sortOrder.
+     */
+    public SortOrder getSortOrder() {
+        return this.sortOrder;
+    }
+
+    /**
+     * Setter for property sort.
+     *
+     * @param sortOrder New value of property sortOrder.
+     */
+    public void setSortOrder(SortOrder sortOrder) {
+        this.sortOrder = sortOrder;
     }
 }
